@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Eliminar paquete</title>
+</head>
+<body>
+    <h1>Eliminar paquete</h1>
+
+    <p>¿Seguro que deseas eliminar el paquete "{{ object.nombre }}"?</p>
+
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit">Sí, eliminar</button>
+    </form>
+
+    <br>
+    <a href="{% url 'lista_paquetes' %}">Cancelar</a>
+</body>
+</html>
