@@ -4,3 +4,6 @@ __pycache__/
 db.sqlite3
 .env
 .vscode/
+frontend/node_modules/
+frontend/dist/
+*.log
