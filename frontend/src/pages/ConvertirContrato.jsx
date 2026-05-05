@@ -79,10 +79,22 @@ export default function ConvertirContrato() {
   if (cotizacion.tiene_contrato) {
     return (
       <section className="page-stack">
-        <PageHeader title="Convertir en contrato" description="Esta cotizacion ya fue convertida." />
+        <PageHeader title="Convertir en contrato" description="Esta cotización ya fue convertida." />
         <article className="panel page-stack">
-          <p>La cotizacion #{cotizacion.id} ya tiene un contrato asociado. No se creara un contrato duplicado.</p>
-          <Button as={Link} to="/contratos" variant="secondary">Ver contratos</Button>
+          <p>La cotización #{cotizacion.id} ya tiene un contrato asociado. No se creará un contrato duplicado.</p>
+          <Button as={Link} to={cotizacion.contrato_id ? `/contratos/${cotizacion.contrato_id}` : '/contratos'} variant="secondary">Ver contrato</Button>
+        </article>
+      </section>
+    );
+  }
+
+  if (cotizacion.estado !== 'confirmado') {
+    return (
+      <section className="page-stack">
+        <PageHeader title="Convertir en contrato" description="La cotización debe estar confirmada antes de crear el contrato." />
+        <article className="panel page-stack">
+          <p>Actualiza el seguimiento de la cotización #{cotizacion.id} a estado confirmado para habilitar la conversión.</p>
+          <Button as={Link} to={`/cotizaciones/${cotizacion.id}`} variant="secondary">Volver al detalle</Button>
         </article>
       </section>
     );

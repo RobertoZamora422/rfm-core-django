@@ -191,6 +191,47 @@ class NegocioApiTests(TestCase):
         cotizacion.refresh_from_db()
         self.assertEqual(cotizacion.estado, Cotizacion.ESTADO_NUEVO)
 
+    def test_convertir_cotizacion_requiere_estado_confirmado(self):
+        cotizacion = Cotizacion.objects.create(
+            cliente=self.cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa='2026-08-20',
+            numero_invitados=80,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1200.00'),
+            estado=Cotizacion.ESTADO_CONTACTADO,
+        )
+
+        response = self.api.post(f'/api/cotizaciones/{cotizacion.id}/convertir-contrato/', {}, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Contrato.objects.filter(cotizacion=cotizacion).exists())
+
+    def test_convertir_cotizacion_confirmada_crea_contrato_pendiente(self):
+        cotizacion = Cotizacion.objects.create(
+            cliente=self.cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa='2026-08-20',
+            numero_invitados=80,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1200.00'),
+            estado=Cotizacion.ESTADO_CONFIRMADO,
+        )
+
+        response = self.api.post(f'/api/cotizaciones/{cotizacion.id}/convertir-contrato/', {}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        contrato = Contrato.objects.get(cotizacion=cotizacion)
+        self.assertEqual(response.data['id'], contrato.id)
+        self.assertEqual(contrato.fecha_evento, date(2026, 8, 20))
+        self.assertEqual(contrato.valor_final, Decimal('1200.00'))
+        self.assertEqual(contrato.estado_pago, Contrato.PAGO_PENDIENTE)
+        self.assertEqual(contrato.monto_abonado, Decimal('0.00'))
+        cotizacion.refresh_from_db()
+        self.assertEqual(cotizacion.estado, Cotizacion.ESTADO_CONVERTIDO)
+
     def test_crear_contrato_por_api_sincroniza_estado_de_cotizacion(self):
         cotizacion = Cotizacion.objects.create(
             cliente=self.cliente,

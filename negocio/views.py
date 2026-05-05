@@ -5,7 +5,7 @@ from decimal import Decimal
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import DecimalField, Exists, OuterRef, Q, Sum, Value
+from django.db.models import DecimalField, Exists, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
@@ -209,16 +209,77 @@ class PaqueteViewSet(viewsets.ModelViewSet):
 
 class CotizacionViewSet(viewsets.ModelViewSet):
     queryset = Cotizacion.objects.select_related('cliente', 'tipo_evento', 'paquete').annotate(
-        tiene_contrato_annotated=Exists(Contrato.objects.filter(cotizacion_id=OuterRef('pk')))
+        tiene_contrato_annotated=Exists(Contrato.objects.filter(cotizacion_id=OuterRef('pk'))),
+        contrato_id_annotated=Subquery(
+            Contrato.objects.filter(cotizacion_id=OuterRef('pk')).values('id')[:1]
+        ),
     )
     serializer_class = CotizacionSerializer
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        buscar = self.request.query_params.get('buscar') or self.request.query_params.get('search')
         estado = self.request.query_params.get('estado')
+        tipo_evento = self.request.query_params.get('tipo_evento')
+        fecha_creacion = (
+            self.request.query_params.get('fecha_creacion')
+            or self.request.query_params.get('fecha_registro')
+        )
         servicio = self.request.query_params.get('tipo_servicio')
+
+        if buscar:
+            buscar = buscar.strip()
+            servicios_match = [
+                value
+                for value, label in Cotizacion.TIPOS_SERVICIO
+                if buscar.lower() in value.lower() or buscar.lower() in label.lower()
+            ]
+            queryset = queryset.filter(
+                Q(cliente__nombre__icontains=buscar)
+                | Q(cliente__telefono__icontains=buscar)
+                | Q(tipo_evento__nombre__icontains=buscar)
+                | Q(paquete__nombre__icontains=buscar)
+                | Q(tipo_servicio__icontains=buscar)
+                | Q(tipo_servicio__in=servicios_match)
+            )
+
         if estado:
-            queryset = queryset.filter(estado=estado)
+            estado_normalizado = estado.strip().lower()
+            estado_map = {
+                'nuevo': Cotizacion.ESTADO_NUEVO,
+                'nueva': Cotizacion.ESTADO_NUEVO,
+                'nuevas': Cotizacion.ESTADO_NUEVO,
+                'contactado': Cotizacion.ESTADO_CONTACTADO,
+                'contactada': Cotizacion.ESTADO_CONTACTADO,
+                'contactadas': Cotizacion.ESTADO_CONTACTADO,
+                'descartado': Cotizacion.ESTADO_DESCARTADO,
+                'descartada': Cotizacion.ESTADO_DESCARTADO,
+                'descartadas': Cotizacion.ESTADO_DESCARTADO,
+            }
+            if estado_normalizado in {'todos', 'todas'}:
+                pass
+            elif estado_normalizado in {'convertido', 'convertida', 'convertidos', 'convertidas'}:
+                queryset = queryset.filter(contrato__isnull=False)
+            elif estado_normalizado in {'confirmado', 'confirmada', 'confirmados', 'confirmadas'}:
+                queryset = queryset.filter(
+                    estado=Cotizacion.ESTADO_CONFIRMADO,
+                    contrato__isnull=True,
+                )
+            elif estado_normalizado in estado_map:
+                queryset = queryset.filter(estado=estado_map[estado_normalizado])
+
+        if tipo_evento:
+            tipo_evento = tipo_evento.strip()
+            if tipo_evento.isdigit():
+                queryset = queryset.filter(tipo_evento_id=tipo_evento)
+            else:
+                queryset = queryset.filter(tipo_evento__nombre__icontains=tipo_evento)
+
+        if fecha_creacion:
+            fecha = parse_date(str(fecha_creacion))
+            if fecha:
+                queryset = queryset.filter(fecha_registro__date=fecha)
+
         if servicio:
             queryset = queryset.filter(tipo_servicio=servicio)
         return queryset
@@ -253,13 +314,19 @@ class CotizacionViewSet(viewsets.ModelViewSet):
         if hasattr(cotizacion, 'contrato'):
             return Response({'detail': 'Esta cotización ya tiene un contrato.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if cotizacion.estado != Cotizacion.ESTADO_CONFIRMADO:
+            return Response(
+                {'detail': 'Solo una cotizacion confirmada puede convertirse en contrato.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         data = {
             'cotizacion': cotizacion.id,
             'fecha_evento': request.data.get('fecha_evento') or cotizacion.fecha_tentativa,
             'valor_final': request.data.get('valor_final') or cotizacion.monto_estimado,
             'estado_contrato': request.data.get('estado_contrato') or Contrato.ESTADO_CONFIRMADO,
             'estado_pago': request.data.get('estado_pago') or Contrato.PAGO_PENDIENTE,
-            'monto_abonado': request.data.get('monto_abonado'),
+            'monto_abonado': request.data.get('monto_abonado') or Decimal('0.00'),
             'observaciones': request.data.get('observaciones', ''),
         }
         serializer = ContratoSerializer(data=data)

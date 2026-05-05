@@ -69,9 +69,11 @@ class PaqueteSerializer(serializers.ModelSerializer):
 class CotizacionSerializer(serializers.ModelSerializer):
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
     cliente_telefono = serializers.CharField(source='cliente.telefono', read_only=True)
+    cliente_fecha_registro = serializers.DateTimeField(source='cliente.fecha_registro', read_only=True)
     tipo_evento_nombre = serializers.CharField(source='tipo_evento.nombre', read_only=True)
     paquete_nombre = serializers.CharField(source='paquete.nombre', read_only=True)
     tiene_contrato = serializers.SerializerMethodField()
+    contrato_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Cotizacion
@@ -80,6 +82,7 @@ class CotizacionSerializer(serializers.ModelSerializer):
             'cliente',
             'cliente_nombre',
             'cliente_telefono',
+            'cliente_fecha_registro',
             'tipo_evento',
             'tipo_evento_nombre',
             'paquete',
@@ -93,14 +96,25 @@ class CotizacionSerializer(serializers.ModelSerializer):
             'ultimo_contacto',
             'fecha_registro',
             'tiene_contrato',
+            'contrato_id',
         )
-        read_only_fields = ('fecha_registro', 'tiene_contrato')
+        read_only_fields = ('fecha_registro', 'tiene_contrato', 'contrato_id')
 
     def get_tiene_contrato(self, obj):
         annotated_value = getattr(obj, 'tiene_contrato_annotated', None)
         if annotated_value is not None:
             return annotated_value
         return hasattr(obj, 'contrato')
+
+    def get_contrato_id(self, obj):
+        try:
+            return obj.contrato_id_annotated
+        except AttributeError:
+            pass
+        try:
+            return obj.contrato.id
+        except (Contrato.DoesNotExist, AttributeError):
+            return None
 
 
 class ContratoSerializer(serializers.ModelSerializer):
