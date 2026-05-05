@@ -23,10 +23,8 @@ import QuickActionCard from '../components/cards/QuickActionCard';
 import Button from '../components/ui/Button';
 import StatusBadge from '../components/ui/StatusBadge';
 import useApiData from '../hooks/useApiData';
-import { contratosService } from '../services/contratosService';
-import { cotizacionesService } from '../services/cotizacionesService';
-import { paquetesService } from '../services/paquetesService';
 import isotipoRancho from '../isotipo-rancho.svg';
+import { obtenerInicioResumen } from '../services/inicioService';
 
 const dateFormatter = new Intl.DateTimeFormat('es-EC', {
   weekday: 'long',
@@ -34,6 +32,18 @@ const dateFormatter = new Intl.DateTimeFormat('es-EC', {
   month: 'long',
   year: 'numeric',
 });
+
+const emptyResumen = {
+  fecha_referencia: '',
+  kpis: {
+    cotizaciones_nuevas: 0,
+    cotizaciones_mes: 0,
+    contratos_evento_mes: 0,
+    eventos_realizados_mes: 0,
+  },
+  eventos_proximos: [],
+  pendientes_importantes: [],
+};
 
 const quickActionGroups = [
   {
@@ -97,13 +107,18 @@ const quickActionGroups = [
   },
 ];
 
+const alertIcons = {
+  paquetes_sin_precio: Tags,
+  cotizaciones_nuevas_sin_contacto: ReceiptText,
+  eventos_proximos_con_saldo: BadgeDollarSign,
+  eventos_realizados_sin_costos: HandCoins,
+  cotizaciones_sin_contrato: ClipboardCheck,
+  clientes_sin_telefono: Users,
+};
+
 function capitalizeFirst(value) {
   if (!value) return '';
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatDateLong(date) {
-  return capitalizeFirst(dateFormatter.format(date));
 }
 
 function parseDateOnly(value) {
@@ -113,60 +128,9 @@ function parseDateOnly(value) {
   return new Date(year, month - 1, day);
 }
 
-function normalize(value) {
-  return String(value || '').toLowerCase();
-}
-
-function getToday() {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  return date;
-}
-
-function addDays(date, days) {
-  const copy = new Date(date);
-  copy.setDate(copy.getDate() + days);
-  return copy;
-}
-
-function toDateValue(date) {
-  return date.toISOString().slice(0, 10);
-}
-
-function isSameMonth(date, baseDate) {
-  return date?.getFullYear() === baseDate.getFullYear() && date?.getMonth() === baseDate.getMonth();
-}
-
-function isOnOrAfter(date, baseDate) {
-  return date && date.getTime() >= baseDate.getTime();
-}
-
-function isOnOrBefore(date, baseDate) {
-  return date && date.getTime() <= baseDate.getTime();
-}
-
-function isPendingConfirmation(contrato) {
-  return normalize(contrato.estado_contrato) === 'pendiente_confirmacion';
-}
-
-function isActiveContract(contrato) {
-  return normalize(contrato.estado_contrato) !== 'cancelado';
-}
-
-function isConfirmedOrActiveContract(contrato) {
-  return isActiveContract(contrato) && !isPendingConfirmation(contrato);
-}
-
-function getPendingBalance(contrato) {
-  if (contrato.saldo_pendiente !== undefined && contrato.saldo_pendiente !== null) {
-    return Number(contrato.saldo_pendiente || 0);
-  }
-  if (normalize(contrato.estado_pago) === 'pagado') return 0;
-  return Number(contrato.valor_final || 0);
-}
-
-function hasPhone(value) {
-  return Boolean(String(value || '').trim());
+function formatDateLong(value) {
+  const date = parseDateOnly(value) || new Date();
+  return capitalizeFirst(dateFormatter.format(date));
 }
 
 function eventTitle(contrato) {
@@ -177,131 +141,16 @@ function packageTitle(contrato) {
   return contrato.paquete_nombre || 'Sin paquete';
 }
 
-function getEventBadgeValue(contrato) {
-  return contrato.estado_pago || contrato.estado_contrato || 'pendiente';
-}
-
-function getUpcomingContracts(contratos, today) {
-  return contratos
-    .filter((contrato) => {
-      const eventDate = parseDateOnly(contrato.fecha_evento);
-      return isConfirmedOrActiveContract(contrato) && isOnOrAfter(eventDate, today);
-    })
-    .sort((a, b) => parseDateOnly(a.fecha_evento) - parseDateOnly(b.fecha_evento));
-}
-
-function buildOperationalKpis({ cotizaciones, contratos, today }) {
-  return {
-    cotizacionesNuevas: cotizaciones.filter((item) => ['nuevo', 'nueva', 'pendiente'].includes(normalize(item.estado))).length,
-    cotizacionesMes: cotizaciones.filter((item) => isSameMonth(new Date(item.fecha_registro), today)).length,
-    contratosEventoMes: contratos.filter((contrato) => {
-      const eventDate = parseDateOnly(contrato.fecha_evento);
-      return isConfirmedOrActiveContract(contrato) && isSameMonth(eventDate, today);
-    }).length,
-    eventosRealizadosMes: contratos.filter((contrato) => {
-      const eventDate = parseDateOnly(contrato.fecha_evento);
-      return isConfirmedOrActiveContract(contrato) && isSameMonth(eventDate, today) && isOnOrBefore(eventDate, today);
-    }).length,
-  };
-}
-
-function buildPendingAlerts({ cotizaciones, contratos, paquetes, today }) {
-  const in15Days = addDays(today, 15);
-  const paquetesSinPrecio = paquetes.filter((paquete) => paquete.activo && Number(paquete.precio_por_persona || 0) <= 0).length;
-  const cotizacionesNuevas = cotizaciones.filter((item) => (
-    ['nuevo', 'nueva', 'pendiente', 'pendiente_revision'].includes(normalize(item.estado)) && !item.ultimo_contacto
-  )).length;
-  const eventosConSaldo = contratos.filter((contrato) => {
-    const eventDate = parseDateOnly(contrato.fecha_evento);
-    return isConfirmedOrActiveContract(contrato)
-      && isOnOrAfter(eventDate, today)
-      && isOnOrBefore(eventDate, in15Days)
-      && getPendingBalance(contrato) > 0;
-  }).length;
-  const realizadosSinCostos = contratos.filter((contrato) => {
-    const eventDate = parseDateOnly(contrato.fecha_evento);
-    return isConfirmedOrActiveContract(contrato)
-      && eventDate
-      && eventDate.getTime() < today.getTime()
-      && Number(contrato.total_costos_directos || 0) <= 0;
-  }).length;
-  const contratosPendientes = contratos.filter((contrato) => isPendingConfirmation(contrato)).length;
-  const clientesSinTelefono = new Set();
-
-  cotizaciones
-    .filter((item) => !['descartado', 'convertido'].includes(normalize(item.estado)))
-    .forEach((item) => {
-      if (!hasPhone(item.cliente_telefono)) clientesSinTelefono.add(item.cliente || item.cliente_nombre || item.id);
-    });
-
-  contratos
-    .filter((contrato) => isActiveContract(contrato))
-    .forEach((contrato) => {
-      if (!hasPhone(contrato.cliente_telefono)) clientesSinTelefono.add(contrato.cotizacion || contrato.cliente_nombre || contrato.id);
-    });
-
-  return [
-    paquetesSinPrecio > 0
-      ? {
-          to: '/paquetes',
-          icon: Tags,
-          priority: 'Alta prioridad',
-          text: `${paquetesSinPrecio} paquetes activos no tienen precio por persona definido.`,
-        }
-      : null,
-    cotizacionesNuevas > 0
-      ? {
-          to: '/cotizaciones',
-          icon: ReceiptText,
-          priority: 'Alta prioridad',
-          text: `${cotizacionesNuevas} cotizaciones nuevas están pendientes de revisión o contacto.`,
-        }
-      : null,
-    eventosConSaldo > 0
-      ? {
-          to: `/contratos?desde=${toDateValue(today)}`,
-          icon: BadgeDollarSign,
-          priority: 'Alta prioridad',
-          text: `${eventosConSaldo} eventos próximos tienen saldo o pago pendiente en los próximos 15 días.`,
-        }
-      : null,
-    realizadosSinCostos > 0
-      ? {
-          to: '/costos-directos',
-          icon: HandCoins,
-          priority: 'Alta prioridad',
-          text: `${realizadosSinCostos} eventos realizados no tienen costos directos registrados.`,
-        }
-      : null,
-    contratosPendientes > 0
-      ? {
-          to: '/contratos',
-          icon: ClipboardCheck,
-          priority: 'Media prioridad',
-          text: `${contratosPendientes} contratos están pendientes de confirmación.`,
-        }
-      : null,
-    clientesSinTelefono.size > 0
-      ? {
-          to: '/clientes',
-          icon: Users,
-          priority: 'Media prioridad',
-          text: `${clientesSinTelefono.size} clientes con gestión activa no tienen teléfono registrado.`,
-        }
-      : null,
-  ].filter(Boolean).slice(0, 5);
-}
-
 function PendingItem({ alert }) {
-  const Icon = alert.icon;
+  const Icon = alertIcons[alert.tipo] || AlertCircle;
   return (
-    <Link className="pending-item" to={alert.to}>
+    <Link className="pending-item" to={alert.ruta}>
       <span aria-hidden="true">
         <Icon size={18} />
       </span>
       <strong>
-        <small>{alert.priority}</small>
-        {alert.text}
+        <small>{alert.prioridad}</small>
+        {alert.texto}
       </strong>
       <ArrowRight size={16} aria-hidden="true" />
     </Link>
@@ -313,32 +162,23 @@ function UpcomingItem({ contrato }) {
     <Link className="upcoming-item" to={`/contratos/${contrato.id}`}>
       <div>
         <strong>{contrato.cliente_nombre || 'Cliente sin registrar'}</strong>
-        <span>{eventTitle(contrato)} · {packageTitle(contrato)}</span>
+        <span>{eventTitle(contrato)} - {packageTitle(contrato)}</span>
       </div>
       <div className="upcoming-meta">
         <time dateTime={contrato.fecha_evento}>{contrato.fecha_evento || 'Fecha no registrada'}</time>
-        <StatusBadge value={getEventBadgeValue(contrato)} />
+        <StatusBadge value={contrato.estado_contrato} />
+        <StatusBadge value={contrato.estado_pago} />
       </div>
     </Link>
   );
 }
 
 export default function Inicio() {
-  const today = getToday();
-  const { data: cotizaciones, loading: loadingCotizaciones, error: cotizacionesError } = useApiData(() => cotizacionesService.list(), [], []);
-  const { data: contratos, loading: loadingContratos, error: contratosError } = useApiData(() => contratosService.list(), [], []);
-  const { data: paquetes, loading: loadingPaquetes, error: paquetesError } = useApiData(() => paquetesService.list(), [], []);
-  const {
-    cotizacionesNuevas,
-    cotizacionesMes,
-    contratosEventoMes,
-    eventosRealizadosMes,
-  } = buildOperationalKpis({ cotizaciones, contratos, today });
-  const proximosContratos = getUpcomingContracts(contratos, today);
-  const visibleUpcoming = proximosContratos.slice(0, 5);
-  const pendingAlerts = buildPendingAlerts({ cotizaciones, contratos, paquetes, today });
-  const isLoading = loadingCotizaciones || loadingContratos || loadingPaquetes;
-  const errors = [cotizacionesError, contratosError, paquetesError].filter(Boolean);
+  const { data: resumen, loading, error } = useApiData(() => obtenerInicioResumen(), emptyResumen, []);
+  const kpis = resumen.kpis || emptyResumen.kpis;
+  const eventosProximos = resumen.eventos_proximos || [];
+  const pendientesImportantes = resumen.pendientes_importantes || [];
+  const fechaReferencia = resumen.fecha_referencia || new Date().toISOString().slice(0, 10);
 
   return (
     <section className="inicio-page">
@@ -348,7 +188,7 @@ export default function Inicio() {
             Bienvenido
             <img className="inicio-brand-mark" src={isotipoRancho} alt="" aria-hidden="true" />
           </h1>
-          <time dateTime={toDateValue(today)}>{formatDateLong(today)}</time>
+          <time dateTime={fechaReferencia}>{formatDateLong(fechaReferencia)}</time>
           <p>Resumen operativo y accesos rápidos para la gestión diaria.</p>
         </div>
       </header>
@@ -357,31 +197,31 @@ export default function Inicio() {
         <MetricCard
           icon={ClipboardList}
           title="Cotizaciones nuevas"
-          value={cotizacionesNuevas}
-          description="Solicitudes en estado Nueva o pendientes de contacto."
+          value={kpis.cotizaciones_nuevas}
+          description="Solicitudes en estado nuevo."
         />
         <MetricCard
           icon={ReceiptText}
           title="Cotizaciones del mes"
-          value={cotizacionesMes}
+          value={kpis.cotizaciones_mes}
           description="Total de cotizaciones creadas durante el mes actual."
         />
         <MetricCard
           icon={CalendarClock}
           title="Contratos con evento este mes"
-          value={contratosEventoMes}
+          value={kpis.contratos_evento_mes}
           description="Contratos confirmados cuyo evento está programado dentro del mes actual."
         />
         <MetricCard
           icon={CheckCircle2}
           title="Eventos realizados del mes"
-          value={eventosRealizadosMes}
-          description="Eventos del mes actual con fecha igual o anterior a la fecha actual."
+          value={kpis.eventos_realizados_mes}
+          description="Eventos confirmados del mes actual con fecha igual o anterior a hoy."
         />
       </div>
 
-      {isLoading ? <p className="muted">Cargando resumen operativo...</p> : null}
-      {errors.map((error, index) => <p className="alert alert-error" key={`${error}-${index}`}>{error}</p>)}
+      {loading ? <p className="muted">Cargando resumen operativo...</p> : null}
+      {error ? <p className="alert alert-error">{error}</p> : null}
 
       <section className="inicio-section">
         <div className="inicio-section-heading">
@@ -408,14 +248,14 @@ export default function Inicio() {
             <div className="operations-panel-heading">
               <div>
                 <h3>Eventos próximos</h3>
-                <p>Contratos activos ordenados por fecha de evento.</p>
+                <p>Contratos confirmados ordenados por fecha de evento.</p>
               </div>
               <CalendarCheck2 size={22} aria-hidden="true" />
             </div>
 
-            {visibleUpcoming.length > 0 ? (
+            {eventosProximos.length > 0 ? (
               <div className="upcoming-list">
-                {visibleUpcoming.map((contrato) => (
+                {eventosProximos.map((contrato) => (
                   <UpcomingItem contrato={contrato} key={contrato.id} />
                 ))}
               </div>
@@ -424,7 +264,7 @@ export default function Inicio() {
             )}
 
             <div className="operations-footer">
-              <Button as={Link} to={`/contratos?desde=${toDateValue(today)}`} variant="secondary">
+              <Button as={Link} to={`/contratos?desde=${fechaReferencia}`} variant="secondary">
                 Ver contratos próximos
                 <ArrowRight size={16} />
               </Button>
@@ -440,9 +280,9 @@ export default function Inicio() {
               <AlertCircle size={22} aria-hidden="true" />
             </div>
 
-            {pendingAlerts.length > 0 ? (
+            {pendientesImportantes.length > 0 ? (
               <div className="pending-list">
-                {pendingAlerts.map((alert) => <PendingItem alert={alert} key={alert.text} />)}
+                {pendientesImportantes.map((alert) => <PendingItem alert={alert} key={alert.tipo} />)}
               </div>
             ) : (
               <p className="empty-state">No hay pendientes importantes por ahora.</p>

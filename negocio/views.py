@@ -42,6 +42,7 @@ from .services import (
     dashboard_financiero,
     desempeno_paquetes,
     get_configuracion,
+    inicio_resumen,
     month_bounds,
     reporte_comercial,
     reporte_financiero,
@@ -85,6 +86,23 @@ def parse_month_period(value, field_name):
     anio = parse_int_param(parts[0], field_name)
     mes = validate_month(parts[1], field_name)
     return anio, mes
+
+
+def parse_date_param(value, field_name):
+    parsed = parse_date(str(value or ''))
+    if not parsed:
+        raise ValidationError({field_name: 'Usa el formato YYYY-MM-DD.'})
+    return parsed
+
+
+def parse_date_range_params(params):
+    desde_value = params.get('desde')
+    hasta_value = params.get('hasta')
+    desde = parse_date_param(desde_value, 'desde') if desde_value else None
+    hasta = parse_date_param(hasta_value, 'hasta') if hasta_value else None
+    if desde and hasta and hasta < desde:
+        raise ValidationError({'hasta': 'La fecha hasta no puede ser anterior a la fecha desde.'})
+    return desde, hasta
 
 
 def contrato_queryset_base():
@@ -260,8 +278,13 @@ class ContratoViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         anio, mes = parse_year_month_params(self.request.query_params)
+        desde, hasta = parse_date_range_params(self.request.query_params)
         if anio and mes:
             queryset = queryset.filter(fecha_evento__year=anio, fecha_evento__month=mes)
+        if desde:
+            queryset = queryset.filter(fecha_evento__gte=desde)
+        if hasta:
+            queryset = queryset.filter(fecha_evento__lte=hasta)
         return queryset
 
     def perform_create(self, serializer):
@@ -342,6 +365,13 @@ class DashboardFinancieroAPIView(APIView):
         anio = anio or today.year
         mes = mes or today.month
         return Response(dashboard_financiero(anio, mes))
+
+
+class InicioResumenAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(inicio_resumen())
 
 
 class PreCotizacionAPIView(APIView):

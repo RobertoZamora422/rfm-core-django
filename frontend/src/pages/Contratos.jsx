@@ -11,14 +11,25 @@ import { money, percent } from '../utils/formatters';
 export default function Contratos() {
   const [searchParams] = useSearchParams();
   const desde = searchParams.get('desde');
-  const { data: contratos, loading, error } = useApiData(() => contratosService.list(), [], []);
-  const rows = desde ? contratos.filter((contrato) => contrato.fecha_evento >= desde) : contratos;
+  const hasta = searchParams.get('hasta');
+  const params = {
+    ...(desde ? { desde } : {}),
+    ...(hasta ? { hasta } : {}),
+  };
+  const { data: contratos, loading, error } = useApiData(() => contratosService.list(params), [], [desde, hasta]);
+  const periodoDescripcion = desde && hasta
+    ? `Contratos con fecha de evento desde ${desde} hasta ${hasta}.`
+    : desde
+      ? `Contratos con fecha de evento desde ${desde}.`
+      : hasta
+        ? `Contratos con fecha de evento hasta ${hasta}.`
+        : 'Ventas cerradas, valores finales y rentabilidad bruta por evento.';
 
   return (
     <section className="page-stack">
       <PageHeader
         title="Contratos"
-        description={desde ? `Contratos con fecha de evento desde ${desde}.` : 'Ventas cerradas, valores finales y rentabilidad bruta por evento.'}
+        description={periodoDescripcion}
       />
       {loading ? <p className="muted">Cargando contratos...</p> : null}
       {error ? <p className="alert alert-error">{error}</p> : null}
@@ -42,7 +53,7 @@ export default function Contratos() {
           { key: 'acciones', label: 'Acciones', render: (row) => <Button as={Link} to={`/contratos/${row.id}`} variant="secondary"><Eye size={16} />Detalle</Button> },
         ]}
         emptyMessage="No hay registros disponibles."
-        rows={rows}
+        rows={contratos}
       />
     </section>
   );

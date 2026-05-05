@@ -1,8 +1,8 @@
 from calendar import monthrange
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, F, Q, Sum
 
 from .models import (
     ConfiguracionNegocio,
@@ -636,6 +636,123 @@ def estado_pagos_cobranza(anio, mes):
         'monto_pendiente_por_cobrar': decimal_to_number(monto_pendiente),
         'pendientes': pendientes[:5],
         'estado_vacio': 'No hay contratos registrados en este mes para analizar cobranza.',
+    }
+
+
+def inicio_resumen(fecha_referencia=None):
+    today = fecha_referencia or date.today()
+    start_month, end_month = month_bounds(today.year, today.month)
+    in_15_days = today + timedelta(days=15)
+
+    contratos_confirmados = Contrato.objects.filter(estado_contrato=Contrato.ESTADO_CONFIRMADO)
+    eventos_proximos_queryset = (
+        contratos_confirmados
+        .filter(fecha_evento__gte=today)
+        .select_related('cotizacion', 'cotizacion__cliente', 'cotizacion__tipo_evento', 'cotizacion__paquete')
+        .order_by('fecha_evento', 'id')
+    )
+    eventos_proximos = [
+        {
+            'id': contrato.id,
+            'cliente_nombre': contrato.cotizacion.cliente.nombre,
+            'evento_nombre': contrato.cotizacion.tipo_evento.nombre if contrato.cotizacion.tipo_evento else 'Sin tipo',
+            'paquete_nombre': contrato.cotizacion.paquete.nombre if contrato.cotizacion.paquete else 'No aplica',
+            'fecha_evento': contrato.fecha_evento.isoformat(),
+            'estado_contrato': contrato.estado_contrato,
+            'estado_pago': contrato.estado_pago,
+            'saldo_pendiente': decimal_to_number(contrato.saldo_pendiente()),
+        }
+        for contrato in eventos_proximos_queryset[:5]
+    ]
+
+    kpis = {
+        'cotizaciones_nuevas': Cotizacion.objects.filter(estado=Cotizacion.ESTADO_NUEVO).count(),
+        'cotizaciones_mes': Cotizacion.objects.filter(fecha_registro__date__range=(start_month, end_month)).count(),
+        'contratos_evento_mes': contratos_confirmados.filter(fecha_evento__range=(start_month, end_month)).count(),
+        'eventos_realizados_mes': contratos_confirmados.filter(fecha_evento__range=(start_month, today)).count(),
+    }
+
+    paquetes_sin_precio = Paquete.objects.filter(activo=True, precio_por_persona__lte=0).count()
+    cotizaciones_nuevas_sin_contacto = Cotizacion.objects.filter(
+        estado=Cotizacion.ESTADO_NUEVO,
+        ultimo_contacto__isnull=True,
+    ).count()
+    eventos_proximos_con_saldo = contratos_confirmados.filter(
+        fecha_evento__range=(today, in_15_days),
+        monto_abonado__lt=F('valor_final'),
+    ).count()
+    eventos_realizados_sin_costos = (
+        contratos_confirmados
+        .filter(fecha_evento__lt=today)
+        .annotate(costos_registrados=Count('costos'))
+        .filter(costos_registrados=0)
+        .count()
+    )
+    cotizaciones_sin_contrato = Cotizacion.objects.filter(
+        estado__in=[Cotizacion.ESTADO_CONTACTADO, Cotizacion.ESTADO_CONFIRMADO],
+        contrato__isnull=True,
+    ).count()
+
+    clientes_sin_telefono = set(
+        Cotizacion.objects.filter(
+            estado__in=[Cotizacion.ESTADO_NUEVO, Cotizacion.ESTADO_CONTACTADO, Cotizacion.ESTADO_CONFIRMADO],
+            cliente__telefono='',
+        ).values_list('cliente_id', flat=True)
+    )
+    clientes_sin_telefono.update(
+        contratos_confirmados.filter(cotizacion__cliente__telefono='').values_list('cotizacion__cliente_id', flat=True)
+    )
+
+    alertas = [
+        {
+            'tipo': 'paquetes_sin_precio',
+            'prioridad': 'Alta prioridad',
+            'cantidad': paquetes_sin_precio,
+            'texto': f'{paquetes_sin_precio} paquetes activos no tienen precio por persona definido.',
+            'ruta': '/paquetes',
+        },
+        {
+            'tipo': 'cotizaciones_nuevas_sin_contacto',
+            'prioridad': 'Alta prioridad',
+            'cantidad': cotizaciones_nuevas_sin_contacto,
+            'texto': f'{cotizaciones_nuevas_sin_contacto} cotizaciones nuevas están pendientes de revisión o contacto.',
+            'ruta': '/cotizaciones',
+        },
+        {
+            'tipo': 'eventos_proximos_con_saldo',
+            'prioridad': 'Alta prioridad',
+            'cantidad': eventos_proximos_con_saldo,
+            'texto': f'{eventos_proximos_con_saldo} eventos próximos tienen saldo o pago pendiente en los próximos 15 días.',
+            'ruta': f'/contratos?desde={today.isoformat()}&hasta={in_15_days.isoformat()}',
+        },
+        {
+            'tipo': 'eventos_realizados_sin_costos',
+            'prioridad': 'Alta prioridad',
+            'cantidad': eventos_realizados_sin_costos,
+            'texto': f'{eventos_realizados_sin_costos} eventos realizados no tienen costos directos registrados.',
+            'ruta': '/costos-directos',
+        },
+        {
+            'tipo': 'cotizaciones_sin_contrato',
+            'prioridad': 'Media prioridad',
+            'cantidad': cotizaciones_sin_contrato,
+            'texto': f'{cotizaciones_sin_contrato} cotizaciones contactadas o confirmadas aún no tienen contrato asociado.',
+            'ruta': '/cotizaciones',
+        },
+        {
+            'tipo': 'clientes_sin_telefono',
+            'prioridad': 'Media prioridad',
+            'cantidad': len(clientes_sin_telefono),
+            'texto': f'{len(clientes_sin_telefono)} clientes con gestión activa no tienen teléfono registrado.',
+            'ruta': '/clientes',
+        },
+    ]
+
+    return {
+        'fecha_referencia': today.isoformat(),
+        'kpis': kpis,
+        'eventos_proximos': eventos_proximos,
+        'pendientes_importantes': [alerta for alerta in alertas if alerta['cantidad'] > 0][:5],
     }
 
 

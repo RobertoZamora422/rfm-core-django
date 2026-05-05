@@ -1,5 +1,5 @@
 from decimal import Decimal
-from datetime import date
+from datetime import date, timedelta
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -225,3 +225,164 @@ class NegocioApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('monto_abonado', response.data)
+
+    def test_inicio_resumen_requiere_autenticacion(self):
+        public_api = APIClient()
+        response = public_api.get('/api/inicio-resumen/')
+
+        self.assertIn(response.status_code, [401, 403])
+
+    def test_inicio_resumen_excluye_cancelados_y_devuelve_id_de_contrato(self):
+        today = date.today()
+        cliente = Cliente.objects.create(nombre='Carla Vera', telefono='0994444444')
+        cotizacion_confirmada = Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa=today + timedelta(days=3),
+            numero_invitados=120,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1800.00'),
+            estado=Cotizacion.ESTADO_CONVERTIDO,
+        )
+        contrato_confirmado = Contrato.objects.create(
+            cotizacion=cotizacion_confirmada,
+            fecha_evento=today + timedelta(days=3),
+            valor_final=Decimal('1800.00'),
+            estado_contrato=Contrato.ESTADO_CONFIRMADO,
+            estado_pago=Contrato.PAGO_PENDIENTE,
+        )
+        cotizacion_cancelada = Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa=today + timedelta(days=1),
+            numero_invitados=80,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1200.00'),
+            estado=Cotizacion.ESTADO_CONVERTIDO,
+        )
+        contrato_cancelado = Contrato.objects.create(
+            cotizacion=cotizacion_cancelada,
+            fecha_evento=today + timedelta(days=1),
+            valor_final=Decimal('1200.00'),
+            estado_contrato=Contrato.ESTADO_CANCELADO,
+            estado_pago=Contrato.PAGO_PENDIENTE,
+        )
+
+        response = self.api.get('/api/inicio-resumen/')
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item['id'] for item in response.data['eventos_proximos']]
+        self.assertIn(contrato_confirmado.id, ids)
+        self.assertNotIn(contrato_cancelado.id, ids)
+
+    def test_inicio_resumen_construye_pendientes_con_datos_reales(self):
+        today = date.today()
+        cliente = Cliente.objects.create(nombre='Sin Telefono', telefono='')
+        Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa=today + timedelta(days=5),
+            numero_invitados=90,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1350.00'),
+            estado=Cotizacion.ESTADO_NUEVO,
+        )
+        cotizacion_evento = Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa=today + timedelta(days=4),
+            numero_invitados=100,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1500.00'),
+            estado=Cotizacion.ESTADO_CONVERTIDO,
+        )
+        Contrato.objects.create(
+            cotizacion=cotizacion_evento,
+            fecha_evento=today + timedelta(days=4),
+            valor_final=Decimal('1500.00'),
+            estado_contrato=Contrato.ESTADO_CONFIRMADO,
+            estado_pago=Contrato.PAGO_ABONADO,
+            monto_abonado=Decimal('500.00'),
+        )
+        cotizacion_sin_costos = Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa=today - timedelta(days=1),
+            numero_invitados=100,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1500.00'),
+            estado=Cotizacion.ESTADO_CONVERTIDO,
+        )
+        Contrato.objects.create(
+            cotizacion=cotizacion_sin_costos,
+            fecha_evento=today - timedelta(days=1),
+            valor_final=Decimal('1500.00'),
+            estado_contrato=Contrato.ESTADO_CONFIRMADO,
+            estado_pago=Contrato.PAGO_PAGADO,
+            monto_abonado=Decimal('1500.00'),
+        )
+
+        response = self.api.get('/api/inicio-resumen/')
+
+        self.assertEqual(response.status_code, 200)
+        tipos = {item['tipo'] for item in response.data['pendientes_importantes']}
+        self.assertIn('cotizaciones_nuevas_sin_contacto', tipos)
+        self.assertIn('eventos_proximos_con_saldo', tipos)
+        self.assertIn('eventos_realizados_sin_costos', tipos)
+        self.assertIn('clientes_sin_telefono', tipos)
+
+    def test_contratos_filtra_por_desde_y_hasta(self):
+        cliente = Cliente.objects.create(nombre='Filtro Fecha', telefono='0995550000')
+        cotizacion_dentro = Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa='2030-01-15',
+            numero_invitados=100,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1500.00'),
+            estado=Cotizacion.ESTADO_CONVERTIDO,
+        )
+        contrato_dentro = Contrato.objects.create(
+            cotizacion=cotizacion_dentro,
+            fecha_evento='2030-01-15',
+            valor_final=Decimal('1500.00'),
+            estado_contrato=Contrato.ESTADO_CONFIRMADO,
+            estado_pago=Contrato.PAGO_PENDIENTE,
+        )
+        cotizacion_fuera = Cotizacion.objects.create(
+            cliente=cliente,
+            tipo_evento=self.evento,
+            paquete=self.paquete,
+            fecha_tentativa='2030-02-15',
+            numero_invitados=100,
+            tipo_servicio=Cotizacion.SERVICIO_COMPLETO,
+            monto_estimado=Decimal('1500.00'),
+            estado=Cotizacion.ESTADO_CONVERTIDO,
+        )
+        contrato_fuera = Contrato.objects.create(
+            cotizacion=cotizacion_fuera,
+            fecha_evento='2030-02-15',
+            valor_final=Decimal('1500.00'),
+            estado_contrato=Contrato.ESTADO_CONFIRMADO,
+            estado_pago=Contrato.PAGO_PENDIENTE,
+        )
+
+        response = self.api.get('/api/contratos/?desde=2030-01-01&hasta=2030-01-31')
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item['id'] for item in response.data]
+        self.assertIn(contrato_dentro.id, ids)
+        self.assertNotIn(contrato_fuera.id, ids)
+
+    def test_contratos_rechaza_fechas_invalidas_o_invertidas(self):
+        response_invalida = self.api.get('/api/contratos/?desde=fecha-mala')
+        response_invertida = self.api.get('/api/contratos/?desde=2030-02-01&hasta=2030-01-01')
+
+        self.assertEqual(response_invalida.status_code, 400)
+        self.assertEqual(response_invertida.status_code, 400)
